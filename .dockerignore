@@ -1,0 +1,7 @@
+**/bin
+**/obj
+.git
+.env
+src/Checkpoint.Api/appsettings.json
+artifacts
+TestResults

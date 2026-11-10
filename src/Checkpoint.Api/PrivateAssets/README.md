@@ -1,0 +1,1 @@
+Private local artwork copied from Frontend/public/assets/characters. Never map this directory as static content. A public repository still exposes committed artwork; production surprise requires private deployment assets.

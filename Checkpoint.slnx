@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Checkpoint.Api/Checkpoint.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Checkpoint.Tests/Checkpoint.Tests.csproj" />
+  </Folder>
+</Solution>

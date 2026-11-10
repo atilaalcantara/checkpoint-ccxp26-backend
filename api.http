@@ -1,0 +1,27 @@
+### Use a UUID v4 per visitor. Choose poll and option IDs returned by participation.
+@host = http://localhost:8080
+@visitor = 7d6f2a3e-5b1c-4c8e-9a41-3f2b8d9c0e11
+
+GET {{host}}/health/live
+###
+GET {{host}}/health/ready
+###
+GET {{host}}/api/v1/progress
+###
+PUT {{host}}/api/v1/participation
+X-Visitor-Id: {{visitor}}
+###
+POST {{host}}/api/v1/votes
+X-Visitor-Id: {{visitor}}
+Content-Type: application/json
+
+{ "pollId": "26000000-0000-4000-8000-000000000001", "optionId": "26000001-0000-4000-8000-000000000001" }
+###
+GET {{host}}/api/v1/results
+X-Visitor-Id: {{visitor}}
+###
+GET {{host}}/api/v1/photos/recent
+###
+### After an uncertain vote or photo, check the saved state:
+PUT {{host}}/api/v1/participation
+X-Visitor-Id: {{visitor}}
