@@ -13,7 +13,9 @@ public sealed class MigrationDb(DbContextOptions<MigrationDb> options) : DbConte
 public sealed class InitialSchema : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("""
-        CREATE SCHEMA IF NOT EXISTS checkpoint;
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'checkpoint') THEN CREATE SCHEMA checkpoint; END IF;
+        END $$;
         CREATE TABLE checkpoint.visitors (id uuid PRIMARY KEY, created_at_utc timestamptz NOT NULL DEFAULT now());
         CREATE TABLE checkpoint.polls (
             id uuid PRIMARY KEY, title text NOT NULL, active boolean NOT NULL DEFAULT true,
