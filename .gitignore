@@ -6,3 +6,6 @@ artifacts/
 .idea/
 .run/
 src/Checkpoint.Api/appsettings.json
+
+# Doc interno (só local)
+IMPLEMENTATION_STATUS.md
