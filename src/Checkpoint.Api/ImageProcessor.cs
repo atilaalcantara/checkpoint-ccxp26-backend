@@ -10,6 +10,12 @@ public sealed class ImageSettings
     public long MaxPixels { get; set; } = 40_000_000;
     public int Concurrency { get; set; } = 2;
 }
+public sealed class RateLimitSettings
+{
+    public int RequestsPerMinute { get; set; } = 1800;
+    public int VotesPerMinute { get; set; } = 300;
+    public int UploadsPerMinute { get; set; } = 60;
+}
 public sealed record ProcessedImage(string MediaType, byte[] Thumbnail);
 
 public sealed class ImageProcessor : IDisposable

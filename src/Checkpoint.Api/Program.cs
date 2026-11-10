@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.HttpOverrides;
 using System.Text.Json;
 using Checkpoint.Api;
 using Dapper;
@@ -14,7 +16,7 @@ builder.Services.AddSingleton(imageSettings);
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = imageSettings.MaxFileBytes + 65536L);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = imageSettings.MaxFileBytes + 65536L);
 builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
-builder.Services.AddSingleton(services => NpgsqlDataSource.Create(Connection(services)));
+builder.Services.AddSingleton(services => NpgsqlDataSource.Create(WithTimeouts(Connection(services))));
 builder.Services.AddDbContext<MigrationDb>((services, options) => options.UseNpgsql(Connection(services), npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "checkpoint")));
 builder.Services.AddSingleton<Store>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
@@ -27,6 +29,33 @@ builder.Services.AddSingleton<ImageProcessor>();
 builder.Services.AddSingleton<ArtworkCatalog>();
 builder.Services.AddScoped<ParticipationService>();
 builder.Services.AddScoped<ResultsService>();
+builder.Services.AddSingleton(services => services.GetRequiredService<IConfiguration>().GetSection("RateLimit").Get<RateLimitSettings>() ?? new());
+if (builder.Configuration.GetValue<bool>("Proxy:TrustForwardedHeaders"))
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        // The API listens only inside the container network behind the TLS-terminating proxy.
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+        options.ForwardLimit = 1;
+    });
+builder.Services.AddOptions<Microsoft.AspNetCore.RateLimiting.RateLimiterOptions>().Configure<RateLimitSettings>((options, rateLimits) =>
+{
+    options.RejectionStatusCode = 429;
+    static string Client(HttpContext c) => c.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    RateLimitPartition<string> Fixed(string name, HttpContext c, int limit) => RateLimitPartition.GetFixedWindowLimiter($"{name}:{Client(c)}",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = limit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 });
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(c =>
+        c.Request.Path.StartsWithSegments("/health") ? RateLimitPartition.GetNoLimiter("health") : Fixed("global", c, rateLimits.RequestsPerMinute));
+    options.AddPolicy("votes", c => Fixed("votes", c, rateLimits.VotesPerMinute));
+    options.AddPolicy("uploads", c => Fixed("uploads", c, rateLimits.UploadsPerMinute));
+    options.OnRejected = async (context, ct) =>
+    {
+        context.HttpContext.Response.Headers.RetryAfter = "30";
+        await context.HttpContext.Response.WriteAsJsonAsync(new ErrorResponse(new ErrorDetails("RATE_LIMITED", "Muitas requisições. Tente novamente em instantes.", context.HttpContext.TraceIdentifier)), ct);
+    };
+});
+builder.Services.AddRateLimiter(_ => { });
 builder.Services.AddCors();
 builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration, IWebHostEnvironment>((options, configuration, environment) =>
 {
@@ -48,6 +77,17 @@ builder.Services.AddOpenApi(options =>
 });
 var app = builder.Build();
 var migrateOnly = args.Contains("--migrate-only", StringComparer.Ordinal);
+if (app.Configuration.GetValue<bool>("Proxy:TrustForwardedHeaders")) app.UseForwardedHeaders();
+if (!app.Environment.IsDevelopment()) app.UseHsts();
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers.XContentTypeOptions = "nosniff";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["Cross-Origin-Resource-Policy"] = "cross-origin";
+    if (!app.Environment.IsDevelopment()) headers.ContentSecurityPolicy = "default-src 'none'; frame-ancestors 'none'";
+    await next(context);
+});
 app.Use(async (context, next) =>
 {
     try
@@ -75,7 +115,9 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new ErrorResponse(new ErrorDetails(error.Code, error.Message, Activity.Current?.Id ?? context.TraceIdentifier)), context.RequestAborted);
     }
 });
+app.UseRouting();
 app.UseCors();
+app.UseRateLimiter();
 
 app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")))
     .WithTags("Health").WithSummary("Check whether the process is alive").Produces<HealthResponse>();
@@ -106,7 +148,7 @@ app.MapPost("/api/v1/votes", async (HttpContext context, VoteRequest request, Pa
     if (request.PollId == Guid.Empty || request.OptionId == Guid.Empty) throw new ApiException(400, "VALIDATION_ERROR", "Informe enquete e alternativa.");
     var result = await service.Vote(visitor, request, ct);
     return Results.Json(result, statusCode: 201);
-}).WithTags("Participation").WithSummary("Submit an assigned poll vote")
+}).RequireRateLimiting("votes").WithTags("Participation").WithSummary("Submit an assigned poll vote")
     .WithDescription("A confirmed vote awards 1 community XP. A repeated vote returns 409 ALREADY_VOTED without additional XP. After a lost response, call PUT /api/v1/participation to recover the saved answer. 400: invalid visitor or option; 404: participation or poll not found; 409: poll not assigned or already answered.")
     .Produces<VoteResponse>(201).Produces<ErrorResponse>(400).Produces<ErrorResponse>(404).Produces<ErrorResponse>(409).Produces<ErrorResponse>(503);
 app.MapGet("/api/v1/results", async (HttpContext context, ResultsService service, CancellationToken ct) =>
@@ -137,7 +179,7 @@ app.MapPost("/api/v1/photos", async (HttpContext context, ParticipationService s
     await file.CopyToAsync(buffer, ct);
     var result = await service.Photo(visitor, buffer.ToArray(), processor, ct);
     return Results.Json(result, statusCode: 201);
-}).WithTags("Photos").WithSummary("Upload one photo")
+}).RequireRateLimiting("uploads").WithTags("Photos").WithSummary("Upload one photo")
     .WithDescription("Send exactly one multipart file field named file. JPEG, PNG, WebP, AVIF, HEIC/HEIF and JPEG 2000 are accepted when supported by the installed codec. Defaults: 10 MiB and 40 megapixels. Awards 2 XP once. A repeated upload returns 409 PHOTO_ALREADY_SUBMITTED. After a lost response, call PUT /api/v1/participation and check photoStatus; it does not identify the saved file. 413: FILE_TOO_LARGE; 415: UNSUPPORTED_IMAGE_FORMAT; 422: INVALID_IMAGE or IMAGE_DIMENSIONS_EXCEEDED; 503: PROCESSING_BUSY or SERVICE_UNAVAILABLE.")
     .Accepts<PhotoUploadRequest>("multipart/form-data")
     .Produces<PhotoResponse>(201).Produces<ErrorResponse>(400).Produces<ErrorResponse>(404).Produces<ErrorResponse>(409).Produces<ErrorResponse>(413).Produces<ErrorResponse>(415).Produces<ErrorResponse>(422).Produces<ErrorResponse>(503);
@@ -166,6 +208,16 @@ using (var scope = app.Services.CreateScope())
     if (processor.Ready) scope.ServiceProvider.GetRequiredService<ArtworkCatalog>().Load();
 }
 await app.RunAsync();
+
+// Fail fast instead of hanging when the database is unreachable or unresponsive; explicit values in the connection string win.
+static string WithTimeouts(string connectionString)
+{
+    var builder = new NpgsqlConnectionStringBuilder(connectionString);
+    if (!builder.ContainsKey("Timeout")) builder.Timeout = 5;
+    if (!builder.ContainsKey("Command Timeout")) builder.CommandTimeout = 15;
+    if (!builder.ContainsKey("Keepalive")) builder.KeepAlive = 10;
+    return builder.ConnectionString;
+}
 
 static string Connection(IServiceProvider services) => services.GetRequiredService<IConfiguration>().GetConnectionString("Checkpoint")
     ?? throw new InvalidOperationException("Set ConnectionStrings__Checkpoint using environment or user secrets.");
