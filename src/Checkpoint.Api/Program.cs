@@ -105,12 +105,12 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration, IWebHostEnv
         if (environment.IsDevelopment()) policy.AllowAnyOrigin();
         else policy.WithOrigins(origins);
         policy.WithMethods("GET", "PUT", "POST")
-            .WithHeaders("Content-Type", "X-Visitor-Id", "X-Bootstrap-Secret", "X-CSRF-Token")
+            .WithHeaders("Content-Type", "X-Visitor-Id", "X-CSRF-Token")
             .WithExposedHeaders("Retry-After");
     });
     options.AddPolicy("admin", policy => policy.WithOrigins(origins)
         .WithMethods("GET", "POST")
-        .WithHeaders("Content-Type", "X-Bootstrap-Secret", "X-CSRF-Token")
+        .WithHeaders("Content-Type", "X-CSRF-Token")
         .WithExposedHeaders("Retry-After")
         .AllowCredentials());
 });
