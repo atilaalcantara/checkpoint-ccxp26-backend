@@ -77,6 +77,9 @@ jobs:
           set -euo pipefail
           IMG="$1"
           docker pull "$IMG"
+          # Run reviewed migrations with the server's configured DB role before replacing the live API.
+          docker run --rm --network shared-net \
+            --env-file /home/ubuntu/apps/checkpoint/.env "$IMG" --migrate-only
           docker rm -f checkpoint-api >/dev/null 2>&1 || true
           docker run -d --name checkpoint-api --restart unless-stopped \
             --network shared-net --env-file /home/ubuntu/apps/checkpoint/.env \

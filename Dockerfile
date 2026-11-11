@@ -13,7 +13,9 @@ FROM build AS test
 ENTRYPOINT ["dotnet", "test", "Checkpoint.slnx", "--no-restore", "--logger", "console;verbosity=normal"]
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS final
-RUN apt-get update && apt-get install -y --no-install-recommends libvips42t64 libheif-plugin-libde265 libheif-plugin-aomdec libheif-plugin-aomenc && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends libvips42t64 libheif-plugin-libde265 libheif-plugin-aomdec libheif-plugin-aomenc && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/checkpoint-data-protection \
+    && chown $APP_UID:$APP_UID /var/lib/checkpoint-data-protection
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_HTTP_PORTS=8080
