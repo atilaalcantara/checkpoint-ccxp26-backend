@@ -30,6 +30,9 @@ public sealed class HardeningTests(ApiFixture fixture)
                 ["Database:MigrateOnStartup"] = "false",
                 ["Database:SeedDemo"] = "false",
                 ["Cors:Origins:0"] = "https://frontend.example",
+                ["Fido2:ServerDomain"] = "frontend.example",
+                ["Fido2:Origins:0"] = "https://frontend.example",
+                ["DataProtection:KeyRingPath"] = Path.Combine(Path.GetTempPath(), "checkpoint-test-data-protection"),
                 ["RateLimit:UploadsPerMinute"] = "2",
                 ["RateLimit:VotesPerMinute"] = "2"
             }));

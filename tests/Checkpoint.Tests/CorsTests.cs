@@ -55,7 +55,10 @@ public sealed class CorsTests(ApiFixture fixture)
                 ["ConnectionStrings:Checkpoint"] = "Host=127.0.0.1;Port=1;Database=unavailable;Username=test;Password=test;Timeout=1;Pooling=false",
                 ["Database:MigrateOnStartup"] = "false",
                 ["Database:SeedDemo"] = "false",
-                ["Cors:Origins:0"] = "https://frontend.example"
+                ["Cors:Origins:0"] = "https://frontend.example",
+                ["Fido2:ServerDomain"] = "frontend.example",
+                ["Fido2:Origins:0"] = "https://frontend.example",
+                ["DataProtection:KeyRingPath"] = Path.Combine(Path.GetTempPath(), "checkpoint-test-data-protection")
             }));
         });
         using var client = factory.CreateClient();

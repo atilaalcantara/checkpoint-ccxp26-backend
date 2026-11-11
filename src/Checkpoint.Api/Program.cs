@@ -8,6 +8,9 @@ using Microsoft.AspNetCore.Cors.Infrastructure;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
+using Fido2NetLib;
 
 DefaultTypeMap.MatchNamesWithUnderscores = true;
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +21,40 @@ builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLi
 builder.Services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
 builder.Services.AddSingleton(services => NpgsqlDataSource.Create(WithTimeouts(Connection(services))));
 builder.Services.AddDbContext<MigrationDb>((services, options) => options.UseNpgsql(Connection(services), npgsql => npgsql.MigrationsHistoryTable("__EFMigrationsHistory", "checkpoint")));
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSingleton<IDistributedCacheChallenge, DistributedCacheChallenge>();
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
+{
+    options.Cookie.Name = "checkpoint.admin";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.ExpireTimeSpan = TimeSpan.FromHours(2);
+    options.SlidingExpiration = false;
+    options.Events.OnRedirectToLogin = context => { context.Response.StatusCode = StatusCodes.Status401Unauthorized; return Task.CompletedTask; };
+    options.Events.OnRedirectToAccessDenied = context => { context.Response.StatusCode = StatusCodes.Status403Forbidden; return Task.CompletedTask; };
+});
+var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
+if (!string.IsNullOrWhiteSpace(keyRingPath))
+    builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyRingPath)).SetApplicationName("CheckpointCCXP26");
+builder.Services.AddAuthorization();
+builder.Services.AddFido2(options =>
+{
+    var serverDomain = builder.Configuration["Fido2:ServerDomain"];
+    var origins = builder.Configuration.GetSection("Fido2:Origins").Get<string[]>();
+    if (builder.Environment.IsDevelopment())
+    {
+        serverDomain ??= "localhost";
+        origins ??= ["http://localhost:4321", "http://127.0.0.1:4321"];
+    }
+    else if (string.IsNullOrWhiteSpace(serverDomain) || origins is not { Length: > 0 } || origins.Any(origin => !Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps))
+    {
+        throw new InvalidOperationException("Production requires Fido2__ServerDomain and explicit HTTPS Fido2__Origins values.");
+    }
+    options.ServerDomain = serverDomain;
+    options.ServerName = "Checkpoint CCXP26";
+    options.Origins = origins.ToHashSet();
+});
 builder.Services.AddSingleton<Store>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddOptions<ProgressionSettings>()
@@ -49,6 +86,7 @@ builder.Services.AddOptions<Microsoft.AspNetCore.RateLimiting.RateLimiterOptions
         c.Request.Path.StartsWithSegments("/health") ? RateLimitPartition.GetNoLimiter("health") : Fixed("global", c, rateLimits.RequestsPerMinute));
     options.AddPolicy("votes", c => Fixed("votes", c, rateLimits.VotesPerMinute));
     options.AddPolicy("uploads", c => Fixed("uploads", c, rateLimits.UploadsPerMinute));
+    options.AddPolicy("admin-auth", c => Fixed("admin-auth", c, 10));
     options.OnRejected = async (context, ct) =>
     {
         context.HttpContext.Response.Headers.RetryAfter = "30";
@@ -60,16 +98,21 @@ builder.Services.AddCors();
 builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration, IWebHostEnvironment>((options, configuration, environment) =>
 {
     var origins = configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
-    if (!environment.IsDevelopment() && origins.Contains("*"))
+    if (!environment.IsDevelopment() && (origins.Length == 0 || origins.Contains("*")))
         throw new InvalidOperationException("CORS requires explicit origins outside Development.");
     options.AddDefaultPolicy(policy =>
     {
         if (environment.IsDevelopment()) policy.AllowAnyOrigin();
         else policy.WithOrigins(origins);
         policy.WithMethods("GET", "PUT", "POST")
-            .WithHeaders("Content-Type", "X-Visitor-Id")
+            .WithHeaders("Content-Type", "X-Visitor-Id", "X-Bootstrap-Secret", "X-CSRF-Token")
             .WithExposedHeaders("Retry-After");
     });
+    options.AddPolicy("admin", policy => policy.WithOrigins(origins)
+        .WithMethods("GET", "POST")
+        .WithHeaders("Content-Type", "X-Bootstrap-Secret", "X-CSRF-Token")
+        .WithExposedHeaders("Retry-After")
+        .AllowCredentials());
 });
 builder.Services.AddOpenApi(options =>
 {
@@ -79,6 +122,7 @@ var app = builder.Build();
 var migrateOnly = args.Contains("--migrate-only", StringComparer.Ordinal);
 if (app.Configuration.GetValue<bool>("Proxy:TrustForwardedHeaders")) app.UseForwardedHeaders();
 if (!app.Environment.IsDevelopment()) app.UseHsts();
+if (!app.Environment.IsDevelopment()) app.UseHttpsRedirection();
 app.Use(async (context, next) =>
 {
     var headers = context.Response.Headers;
@@ -109,7 +153,10 @@ app.Use(async (context, next) =>
             _ => new ApiException(500, "INTERNAL_ERROR", "Ocorreu um erro inesperado.")
         };
         // Do not log payloads, visitor identifiers, connection strings or request headers.
-        if (error.Status >= 500) app.Logger.LogError("Request failed: {ErrorType}, {Code}, trace {TraceId}", ex.GetType().Name, error.Code, context.TraceIdentifier);
+        if (error.Status >= 500)
+        {
+            app.Logger.LogError("Request failed: {ErrorType}, {Code}, trace {TraceId}", ex.GetType().Name, error.Code, context.TraceIdentifier);
+        }
         context.Response.StatusCode = error.Status;
         if (error.Status is 503 or 429) context.Response.Headers.RetryAfter = "5";
         await context.Response.WriteAsJsonAsync(new ErrorResponse(new ErrorDetails(error.Code, error.Message, Activity.Current?.Id ?? context.TraceIdentifier)), context.RequestAborted);
@@ -118,6 +165,20 @@ app.Use(async (context, next) =>
 app.UseRouting();
 app.UseCors();
 app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/admin") && context.User.Identity?.IsAuthenticated == true && context.Request.Method is "POST" or "PUT" or "DELETE")
+    {
+        var cookie = context.Request.Cookies["checkpoint.csrf"];
+        var header = context.Request.Headers["X-CSRF-Token"].ToString();
+        if (string.IsNullOrEmpty(cookie) || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(cookie), System.Text.Encoding.UTF8.GetBytes(header)))
+        { context.Response.StatusCode = 403; return; }
+    }
+    await next(context);
+});
+app.MapAdminAuth();
 
 app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")))
     .WithTags("Health").WithSummary("Check whether the process is alive").Produces<HealthResponse>();

@@ -9,6 +9,27 @@ namespace Checkpoint.Api;
 public sealed class MigrationDb(DbContextOptions<MigrationDb> options) : DbContext(options);
 
 [DbContext(typeof(MigrationDb))]
+[Migration("202611110001_AdminPasskeys")]
+public sealed class AdminPasskeysMigration : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("""
+        CREATE TABLE checkpoint.admin_users (
+            id uuid PRIMARY KEY, name text NOT NULL UNIQUE, role text NOT NULL DEFAULT 'admin',
+            created_at_utc timestamptz NOT NULL DEFAULT now());
+        CREATE TABLE checkpoint.admin_passkeys (
+            credential_id bytea PRIMARY KEY, user_id uuid NOT NULL REFERENCES checkpoint.admin_users(id),
+            public_key bytea NOT NULL, sign_count bigint NOT NULL DEFAULT 0, user_handle bytea NOT NULL,
+            transports text[] NOT NULL DEFAULT '{}', created_at_utc timestamptz NOT NULL DEFAULT now());
+        CREATE UNIQUE INDEX admin_passkeys_one_per_admin ON checkpoint.admin_passkeys(user_id);
+        INSERT INTO checkpoint.admin_users(id,name) VALUES
+          ('5f3f0000-0000-4000-8000-000000000001','Átila'),
+          ('5f3f0000-0000-4000-8000-000000000002','Juh');
+        """);
+
+    protected override void Down(MigrationBuilder migrationBuilder) => throw new NotSupportedException("Admin passkey data is not removed automatically.");
+}
+
+[DbContext(typeof(MigrationDb))]
 [Migration("202611100001_InitialSchema")]
 public sealed class InitialSchema : Migration
 {
