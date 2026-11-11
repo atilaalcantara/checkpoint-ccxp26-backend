@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Build test stage
-        run: docker build --target test -t checkpoint-test .
+        run: docker build --network host --target test -t checkpoint-test .
       - name: Run tests
         run: >-
           docker run --rm --network host
