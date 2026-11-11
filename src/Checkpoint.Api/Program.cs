@@ -38,6 +38,8 @@ var keyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
 if (!string.IsNullOrWhiteSpace(keyRingPath))
     builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keyRingPath)).SetApplicationName("CheckpointCCXP26");
 builder.Services.AddAuthorization();
+builder.Services.AddAntiforgery(options => { options.HeaderName = "X-CSRF-Token"; options.Cookie.Name = "checkpoint.antiforgery"; options.Cookie.HttpOnly = true; options.Cookie.SameSite = SameSiteMode.Strict; options.Cookie.SecurePolicy = builder.Environment.IsDevelopment() ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always; });
+if (!builder.Environment.IsDevelopment() && builder.Configuration.GetValue<bool>("Admin:EnableDevLogin")) throw new InvalidOperationException("Development login cannot be enabled outside Development.");
 builder.Services.AddFido2(options =>
 {
     var serverDomain = builder.Configuration["Fido2:ServerDomain"];
@@ -97,7 +99,7 @@ builder.Services.AddRateLimiter(_ => { });
 builder.Services.AddCors();
 builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration, IWebHostEnvironment>((options, configuration, environment) =>
 {
-    var origins = configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
+    var origins = configuration.GetSection("Cors:Origins").Get<string[]>() ?? (environment.IsDevelopment() ? ["http://localhost:4321", "http://127.0.0.1:4321"] : []);
     if (!environment.IsDevelopment() && (origins.Length == 0 || origins.Contains("*")))
         throw new InvalidOperationException("CORS requires explicit origins outside Development.");
     options.AddDefaultPolicy(policy =>
@@ -109,7 +111,7 @@ builder.Services.AddOptions<CorsOptions>().Configure<IConfiguration, IWebHostEnv
             .WithExposedHeaders("Retry-After");
     });
     options.AddPolicy("admin", policy => policy.WithOrigins(origins)
-        .WithMethods("GET", "POST")
+        .WithMethods("GET", "POST", "PUT", "DELETE")
         .WithHeaders("Content-Type", "X-CSRF-Token")
         .WithExposedHeaders("Retry-After")
         .AllowCredentials());
@@ -136,6 +138,7 @@ app.Use(async (context, next) =>
 {
     try
     {
+        if (context.Request.Path.StartsWithSegments("/api/admin")) context.Response.Headers.CacheControl = "no-store";
         if (context.Request.Path.StartsWithSegments("/api/v1") &&
             context.Request.Path != "/api/v1/progress" && context.Request.Path != "/api/v1/photos/recent")
             context.Response.Headers.CacheControl = "no-store";
@@ -169,16 +172,16 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/api/admin") && context.User.Identity?.IsAuthenticated == true && context.Request.Method is "POST" or "PUT" or "DELETE")
+    if (context.Request.Path.StartsWithSegments("/api/admin") && context.Request.Path != "/api/admin/auth/dev-login" && context.User.Identity?.IsAuthenticated == true && context.Request.Method is "POST" or "PUT" or "DELETE")
     {
-        var cookie = context.Request.Cookies["checkpoint.csrf"];
-        var header = context.Request.Headers["X-CSRF-Token"].ToString();
-        if (string.IsNullOrEmpty(cookie) || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(cookie), System.Text.Encoding.UTF8.GetBytes(header)))
+        var antiforgery = context.RequestServices.GetRequiredService<Microsoft.AspNetCore.Antiforgery.IAntiforgery>();
+        if (!await antiforgery.IsRequestValidAsync(context))
         { context.Response.StatusCode = 403; return; }
     }
     await next(context);
 });
 app.MapAdminAuth();
+app.MapAdminManagement();
 
 app.MapGet("/health/live", () => Results.Ok(new HealthResponse("ok")))
     .WithTags("Health").WithSummary("Check whether the process is alive").Produces<HealthResponse>();
@@ -228,6 +231,8 @@ app.MapGet("/api/v1/photos/recent", async (Store store, CancellationToken ct) =>
     .Produces<RecentPhotosResponse>().Produces<ErrorResponse>(503);
 app.MapPost("/api/v1/photos", async (HttpContext context, ParticipationService service, ImageProcessor processor, ImageSettings settings, CancellationToken ct) =>
 {
+    await using (var db = await context.RequestServices.GetRequiredService<Store>().Open(ct))
+        if (await Store.One<string>(db, "SELECT status FROM checkpoint.site_status WHERE id=1", null, ct) != "live") throw new ApiException(409, "SITE_NOT_LIVE", "O site não está recebendo participações no momento.");
     var visitor = Headers.Visitor(context);
     if (!context.Request.HasFormContentType) throw new ApiException(400, "VALIDATION_ERROR", "Envie um formulário multipart com o campo file.");
     var form = await context.Request.ReadFormAsync(ct);

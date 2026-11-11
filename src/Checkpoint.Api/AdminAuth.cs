@@ -25,12 +25,21 @@ public static class AdminAuth
             await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return Results.NoContent();
         }).RequireAuthorization().RequireCors("admin");
-        app.MapGet("/api/admin/auth/csrf", (HttpContext context) =>
+        app.MapGet("/api/admin/auth/csrf", (HttpContext context, Microsoft.AspNetCore.Antiforgery.IAntiforgery antiforgery) =>
         {
-            var token = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
-            context.Response.Cookies.Append("checkpoint.csrf", token, new CookieOptions { HttpOnly = false, Secure = context.Request.IsHttps, SameSite = SameSiteMode.Strict, Path = "/api/admin", MaxAge = TimeSpan.FromHours(2) });
-            return Results.Ok(new { token });
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Ok(new { token = antiforgery.GetAndStoreTokens(context).RequestToken });
         }).RequireAuthorization().RequireCors("admin");
+        if (app.Environment.IsDevelopment() && app.Configuration.GetValue<bool>("Admin:EnableDevLogin"))
+            app.MapPost("/api/admin/auth/dev-login", async (HttpContext ctx) =>
+            {
+                var ip = ctx.Connection.RemoteIpAddress;
+                var origin = ctx.Request.Headers.Origin.ToString();
+                if (ip is null || !System.Net.IPAddress.IsLoopback(ip) || !Uri.TryCreate(origin, UriKind.Absolute, out var uri) || uri.Scheme != "http" || uri.Host is not ("localhost" or "127.0.0.1") || uri.Port != 4321) return Results.Forbid();
+                var claims = new[] { new Claim(ClaimTypes.NameIdentifier, "5f3f0000-0000-4000-8000-000000000001"), new Claim(ClaimTypes.Name, "Admin local"), new Claim(ClaimTypes.Role, "admin") };
+                await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
+                return Results.Ok(new { success = true });
+            }).RequireRateLimiting("admin-auth").RequireCors("admin");
     }
 
     private static async Task<IResult> LoginOptions(HttpContext ctx, IDistributedCacheChallenge challenges, [FromServices] IFido2 fido, CancellationToken ct)

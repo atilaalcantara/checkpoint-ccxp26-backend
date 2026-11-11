@@ -9,6 +9,8 @@ public sealed class ParticipationService(Store store)
     {
         await using var connection = await store.Open(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        await Store.RequireLive(connection, ct);
+        await Store.Execute(connection, "SELECT pg_advisory_xact_lock(734619)", null, ct);
         await Store.LockVisitor(connection, visitorId, true, ct);
         var existing = (await Store.Query<Guid>(connection,
             "SELECT poll_id FROM checkpoint.poll_assignments WHERE visitor_id=@visitorId ORDER BY position", new { visitorId }, ct)).ToArray();
@@ -33,7 +35,7 @@ public sealed class ParticipationService(Store store)
             options.Where(o => o.PollId == p.Id).Select(o => new PollOption(o.Id, o.Label)).ToArray(),
             p.AnswerOptionId, p.AnswerOptionId is null)).ToArray();
         var answered = assigned.Count(p => p.AnswerOptionId is not null);
-        var photo = await Store.One<bool>(connection, "SELECT EXISTS(SELECT 1 FROM checkpoint.photos WHERE visitor_id=@visitorId)", new { visitorId }, ct);
+        var photo = await Store.One<bool>(connection, "SELECT EXISTS(SELECT 1 FROM checkpoint.photo_submissions WHERE visitor_id=@visitorId)", new { visitorId }, ct);
         await transaction.CommitAsync(ct);
         return new(answered == 3 ? "completed" : assigned.Length < 3 ? "waiting_for_polls" : "ready",
             3, assigned.Length, answered, answered == 3, photo ? "submitted" : "not_submitted", assigned);
@@ -43,6 +45,7 @@ public sealed class ParticipationService(Store store)
     {
         await using var connection = await store.Open(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        await Store.RequireLive(connection, ct);
         await Store.LockVisitor(connection, visitorId, false, ct);
         if (!await Store.One<bool>(connection, "SELECT EXISTS(SELECT 1 FROM checkpoint.polls WHERE id=@PollId)", request, ct))
             throw new ApiException(404, "POLL_NOT_FOUND", "Enquete não encontrada.");
@@ -71,6 +74,7 @@ public sealed class ParticipationService(Store store)
         var processed = await processor.Process(original, ct);
         await using var connection = await store.Open(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
+        await Store.RequireLive(connection, ct);
         await Store.LockVisitor(connection, visitorId, false, ct);
         await CheckPhoto(connection, visitorId, ct);
         var photoId = Guid.NewGuid();
@@ -78,6 +82,7 @@ public sealed class ParticipationService(Store store)
             INSERT INTO checkpoint.photos(id,visitor_id,original,media_type,thumbnail,width,height)
             VALUES(@photoId,@visitorId,@original,@mediaType,@thumbnail,360,330)
             """, new { photoId, visitorId, original, processed.MediaType, processed.Thumbnail }, ct);
+        await Store.Execute(connection, "INSERT INTO checkpoint.photo_submissions(visitor_id) VALUES(@visitorId)", new { visitorId }, ct);
         var community = await Award(connection, 2, ct);
         await transaction.CommitAsync(ct);
         return new PhotoResponse(photoId, "submitted", 2, community);
@@ -85,7 +90,7 @@ public sealed class ParticipationService(Store store)
 
     private static async Task CheckPhoto(NpgsqlConnection connection, Guid visitorId, CancellationToken ct)
     {
-        if (await Store.One<bool>(connection, "SELECT EXISTS(SELECT 1 FROM checkpoint.photos WHERE visitor_id=@visitorId)", new { visitorId }, ct))
+        if (await Store.One<bool>(connection, "SELECT EXISTS(SELECT 1 FROM checkpoint.photo_submissions WHERE visitor_id=@visitorId)", new { visitorId }, ct))
             throw new ApiException(409, "PHOTO_ALREADY_SUBMITTED", "Sua foto já foi enviada.");
     }
 

@@ -9,6 +9,19 @@ namespace Checkpoint.Api;
 public sealed class MigrationDb(DbContextOptions<MigrationDb> options) : DbContext(options);
 
 [DbContext(typeof(MigrationDb))]
+[Migration("202611110002_AdminManagement")]
+public sealed class AdminManagementMigration : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("""
+        CREATE TABLE checkpoint.site_status (id integer PRIMARY KEY CHECK(id=1), status text NOT NULL CHECK(status IN ('live','before','paused','ended')));
+        INSERT INTO checkpoint.site_status VALUES (1,'before');
+        CREATE TABLE checkpoint.photo_submissions (visitor_id uuid PRIMARY KEY REFERENCES checkpoint.visitors(id));
+        INSERT INTO checkpoint.photo_submissions(visitor_id) SELECT visitor_id FROM checkpoint.photos ON CONFLICT DO NOTHING;
+        """);
+    protected override void Down(MigrationBuilder migrationBuilder) => throw new NotSupportedException("Data deletion is not automatic.");
+}
+
+[DbContext(typeof(MigrationDb))]
 [Migration("202611110001_AdminPasskeys")]
 public sealed class AdminPasskeysMigration : Migration
 {
@@ -98,6 +111,11 @@ public sealed class InitialSchema : Migration
 
 public sealed class Store(NpgsqlDataSource source)
 {
+    public static async Task RequireLive(NpgsqlConnection connection, CancellationToken ct)
+    {
+        var status = await One<string>(connection, "SELECT status FROM checkpoint.site_status WHERE id=1 FOR SHARE", null, ct);
+        if (status != "live") throw new ApiException(409, "SITE_NOT_LIVE", "O site não está recebendo participações no momento.");
+    }
     public async Task<NpgsqlConnection> Open(CancellationToken ct) => await source.OpenConnectionAsync(ct);
 
     public static Task<int> Execute(NpgsqlConnection connection, string sql, object? args, CancellationToken ct) =>

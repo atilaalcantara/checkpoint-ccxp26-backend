@@ -35,7 +35,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         await admin.OpenAsync();
         await admin.ExecuteAsync($"CREATE DATABASE \"{database}\"");
         ConnectionString = new NpgsqlConnectionStringBuilder(adminConnection) { Database = database, IncludeErrorDetail = false }.ConnectionString;
-        try { Client = CreateClient(); }
+        try { Client = CreateClient(); await Client.GetAsync("/health/live"); await Execute("UPDATE checkpoint.site_status SET status='live' WHERE id=1"); }
         catch { await Cleanup(); throw; }
     }
 

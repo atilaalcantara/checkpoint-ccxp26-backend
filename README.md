@@ -34,12 +34,13 @@ docker run -d --restart unless-stopped -p 127.0.0.1:8080:8080 \
   -e ASPNETCORE_ENVIRONMENT=Production -e "ConnectionStrings__Checkpoint=..." \
   -e Cors__Origins__0=https://seu-dominio -e Proxy__TrustForwardedHeaders=true checkpoint-api
 ```
-Usuário de banco mínimo (a API nunca apaga dados):
+Usuário de banco mínimo (exclusão restrita aos recursos administráveis):
 ```sql
 CREATE ROLE checkpoint_app LOGIN PASSWORD '...';
 GRANT CONNECT ON DATABASE checkpoint TO checkpoint_app;
 GRANT USAGE ON SCHEMA checkpoint TO checkpoint_app;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA checkpoint TO checkpoint_app;
+GRANT DELETE ON checkpoint.poll_options, checkpoint.polls, checkpoint.photos TO checkpoint_app;
 ```
 O Postgres não deve ter porta pública; o TLS termina no proxy (veja o `nginx.conf.example` do frontend); bloqueie `/health` ao público e use `/health/ready` para monitorar.
 
@@ -56,11 +57,21 @@ Contrato para implementar o futuro painel, na mesma origem HTTPS do site:
 1. `POST /api/admin/auth/passkey/options` gera opções WebAuthn para login descobrível com `userVerification: required` e envia cookie HttpOnly temporário. Converta `challenge` e IDs de credenciais de base64url para bytes, e passe as opções a `navigator.credentials.get({ publicKey: options })`.
 2. `POST /api/admin/auth/passkey/verify` recebe o `PublicKeyCredential` serializado em JSON: `id`, `rawId`, `type`, `clientExtensionResults` e `response` com `clientDataJSON`, `authenticatorData`, `signature` e `userHandle` quando presente; os campos binários devem ser base64url. A verificação WebAuthn ocorre no backend, que emite cookie HttpOnly `checkpoint.admin`.
 3. `GET /api/admin/auth/me` retorna `id`, `name` e `role` da sessão, ou 401. Use `credentials: 'include'` nas requisições.
-4. Antes de qualquer operação autenticada de escrita, solicite `GET /api/admin/auth/csrf` e envie o `token` retornado no header `X-CSRF-Token` da requisição; isso inclui `POST /api/admin/auth/logout`. Após logout, a sessão não deve mais ser usada.
+4. Antes de qualquer operação autenticada de escrita, solicite `GET /api/admin/auth/csrf` e envie o `token` retornado no header `X-CSRF-Token` da requisição; isso inclui `POST /api/admin/auth/logout`. O antiforgery do ASP.NET Core também emite seu cookie HttpOnly. Após logout, a sessão não deve mais ser usada.
 
 Cookie: HttpOnly, SameSite Strict, Secure em produção, duração de 2 horas sem renovação automática. Os challenges expiram após 3 minutos, são consumidos uma só vez e ficam em memória na instância da API. O RP ID de produção deve continuar sendo o domínio em que a Passkey foi criada; uma credencial de `localhost` não funciona em produção. Configure `Fido2__ServerDomain`, `Fido2__Origins__0` e `Cors__Origins__0` com o domínio/origem corretos; `DataProtection__KeyRingPath=/var/lib/checkpoint-data-protection` deve apontar ao volume persistente. Login usa Fido2 4.0.1; não há senha, JWT ou recuperação automática.
 
 O deploy aplica migrations antes de substituir a API. Não remova o volume nem as tabelas administrativas nos próximos deploys.
+
+### Painel e estado do site
+
+Os endpoints autenticados são `GET/POST /api/admin/polls`, `PUT/DELETE /api/admin/polls/{id}`, `GET /api/admin/photos?page=1` (seis miniaturas por página), `DELETE /api/admin/photos/{id}` e `PUT /api/admin/site-status`. O estado público é consultado em `GET /api/v1/site-status`: `live`, `before`, `paused` ou `ended`. A migration `202611110002_AdminManagement` inicia em `before` e registra os envios existentes antes de permitir a exclusão de fotos sem repetir XP. Confirme o estado desejado após o deploy.
+
+O usuário do banco da API precisa também de `DELETE` nas tabelas `checkpoint.poll_options`, `checkpoint.polls` e `checkpoint.photos` para as ações administrativas. A concessão deve ser aplicada pelo operador do banco, além dos privilégios SELECT/INSERT/UPDATE documentados acima.
+
+### Login local de desenvolvimento
+
+Para testar sem uma passkey local, execute o backend exclusivamente na máquina local com `ASPNETCORE_ENVIRONMENT=Development`, `Admin__EnableDevLogin=true` e uma conexão de desenvolvimento em `ConnectionStrings__Checkpoint`; configure `Database__MigrateOnStartup=true` para aplicar as migrations no banco local. Use o frontend de desenvolvimento em `http://localhost:4321` e a API em `http://localhost:8081`, mantendo o mesmo hostname em ambos; configure `PUBLIC_API_URL` no frontend. O endpoint local exige conexão loopback e origem local na porta 4321. Não exponha essa configuração à rede. Fora de Development, habilitar a opção impede a inicialização e o endpoint não é mapeado.
 
 ## Desenvolvimento
 ```sh
