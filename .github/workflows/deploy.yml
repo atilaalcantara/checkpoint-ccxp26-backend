@@ -103,3 +103,9 @@ jobs:
           docker logs --tail 80 checkpoint-api
           exit 1
           REMOTE
+      - name: External production API health through TLS proxy
+        run: >-
+          curl --fail --silent --show-error --output /dev/null
+          --retry 12 --retry-all-errors --retry-delay 5 --retry-max-time 180
+          --connect-timeout 10 --max-time 15
+          https://ccxp26.atilaalcantara.com/api/v1/site-status

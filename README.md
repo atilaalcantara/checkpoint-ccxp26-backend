@@ -25,6 +25,8 @@ Rate limit por IP (429 + `Retry-After`), headers `nosniff`/`Referrer-Policy`/CSP
 | `Progression__FriendsAtXp` … `MarriedAtXp` | 15 / 55 / 130 / 230 | XP de cada nível |
 
 ## Deploy (Linux ARM64)
+CI/CD HLG, fonte do dispatcher root-installed e evidências de deploy: [deploy/HLG.md](deploy/HLG.md). API e web têm releases independentes e compartilham lock HLG com espera bounded.
+
 ```sh
 docker buildx build --platform linux/arm64 -t checkpoint-api .
 # 1) migrations, com o usuário dono do banco

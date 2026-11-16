@@ -1,5 +1,109 @@
 # Frente D — auditoria PRD, somente leitura
 
+## Execução autorizada — backup e ensaio de 2026-11-16
+
+**Backup/restauração/ensaio concluídos. Cleanup em PRD continua NÃO autorizado.**
+O usuário informou HLG validada em navegador, todos os fluxos, e autorizou
+expressamente backup PRD read-only e cleanup somente no clone efêmero.
+Este registro não substitui os documentos de validação HLG de outra frente.
+
+- Execução aprovada: **17:55:49–17:56:04 UTC**. Diagnóstico PRD:
+  **2026-11-16 14:55:53.393216-03**, `personal_db`, `postgres`, read-only `on`.
+- Pacote usado: worktree `ccxp-backend-hlg`, `deploy/production-cleanup`:
+  `backup.sh`, `remote.sh dry-run`, `diagnostic.sql`, `cleanup.sql`, `postcheck.sql`.
+  `remote.sh cleanup` **não foi chamado**.
+- Origem: Docker host Oracle, `personal-postgres`, PostgreSQL **16.14**.
+  SQL PRD em `REPEATABLE READ READ ONLY`/`default_transaction_read_only=on`;
+  `pg_dump` custom com `PGOPTIONS` read-only. Sem DDL/DML ou mudança de status PRD.
+- Backup privado verificado (caminho absoluto):
+  `/Users/atilaalcantara/Documents/pixelArtCCXP26/checkpointCCXP26/backups-private/checkpoint-20261116T175551Z-bcKa1C`.
+  Parent conferido com `ls`; destino fora de Git (`git rev-parse` rejeita worktree).
+  Diretórios **700**, todos os arquivos **600**, verificados ao final.
+- `checkpoint.dump`: schema `checkpoint` completo, incluindo originais/thumbnails
+  `bytea` e todas as colunas privadas de autenticação. `pg_restore --list` passou;
+  as 14 entradas TABLE DATA coincidem com todas as tabelas do schema na origem.
+  `SHA256SUMS` final validou os 11 artefatos, incluindo dump, catálogo, logs,
+  resumo de verificação e key ring. Nenhum conteúdo de credencial/hash foi publicado.
+- `keyring-prd.tar`: leitura via `docker exec checkpoint-api tar` do mount
+  `/var/lib/checkpoint-data-protection` (volume `checkpoint-data-protection`).
+  Tar privado validado sem extração: caminhos seguros, XMLs de chaves parseáveis,
+  conteúdo idêntico em segunda leitura. Sem imprimir nomes/conteúdo das chaves.
+  Não inclui `.env`, roles globais PostgreSQL nem configuração completa da API.
+
+### Contagens atuais e dry-run read-only
+
+| Tabela | PRD / clone restaurado antes | Clone após cleanup |
+|---|---:|---:|
+| polls | 3 | 0 |
+| poll_options | 6 | 0 |
+| poll_assignments | 27 | 0 |
+| votes | 15 | 0 |
+| photos | 4 | 0 |
+| photo_submissions | 5 | 0 |
+| idempotency_operations | 0 | 0 |
+| result_snapshots | 0 | 0 |
+| visitors | 11 | 11 |
+| admin_users | 2 | 2 |
+| admin_passkeys | 2 | 2 |
+| site_status | 1 | 1 |
+| __EFMigrationsHistory | 4 | 4 |
+| community_progress | 1 | 1 |
+
+PRD: **25 XP, revisão 20, status `before`**; 15 XP de votos + 10 XP de
+marcadores, resíduo zero. Fotos: **4.853.745 bytes** originais e **49.651 bytes**
+thumbnails. Um marcador sem foto; zero fotos sem marcador, votos órfãos ou
+enquetes fora da regra de duas opções. Dez FKs validadas e os dois constraint
+triggers presentes. `remote.sh dry-run` executou somente diagnóstico read-only.
+
+### Restauração, comparação e cleanup exclusivo no clone
+
+- Docker local indisponível; clientes PG16 executados no Docker host via SSH.
+  Adaptador temporário de `pg_restore` aceita somente `--version`/`--list`, usa
+  container cliente `--rm --network none --read-only` e stdin, sem conexão SQL.
+- Clone **`checkpoint-restore-frente-d-8000cafc27eb`**, banco **`personal_db`**
+  exclusivamente nele. Imagem PG16 já existente, fixada por ID:
+  `sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc`.
+  `--network none`, sem portas, sem mounts de volumes/binds, rootfs read-only,
+  PGDATA e socket em `tmpfs`. Sem API/workers ou rede PRD/HLG.
+  Inspeção de nome, label exclusiva, rede e ausência de volumes antes do cleanup.
+- Restore: `pg_restore --single-transaction --exit-on-error --no-owner --no-acl`,
+  sem `--clean`, diretamente em `docker exec` no clone. Exit code zero.
+- Contagens e SHA-256 interno de **todas as linhas/colunas das 14 tabelas** iguais
+  entre origem e restore. Serialização `to_jsonb`, timestamps normalizados a UTC,
+  DateStyle ISO/YMD, bytea hex, ordenação `COLLATE "C"`; inclui todos os bytes
+  das fotos e todos os campos de admins/passkeys. Hashes apenas em memória do
+  verificador, resultados externos somente booleanos de igualdade.
+  Origem igual antes/depois do backup e depois do ensaio; nenhuma divergência.
+- `cleanup.sql` original executado com **COMMIT real somente no clone**.
+  `SET CONSTRAINTS ALL IMMEDIATE`, assertions internas e `postcheck.sql` passaram.
+  Oito tabelas-alvo vazias, **XP 0, revisão 21**, status `before`.
+  Igualdade integral pós-cleanup de visitantes, admins (incluindo role), passkeys
+  (incluindo credenciais/counters), status e migrações confirmada; constraints
+  do schema todas validadas. Não é teste de login nem backup de roles globais PG.
+- Container removido por nome/label exatos ao final, ausência confirmada.
+  Nenhum volume persistente foi criado; PGDATA/socket tmpfs descartados.
+  Nenhum container/volume PRD ou HLG removido/reiniciado.
+
+Evidências privadas no bundle: `diagnostic-prd.log`, `dry-run-prd.log`,
+`diagnostic-clone-before.log`, `restore.log`, `cleanup-clone.log`,
+`postcheck-clone.log`, `verification-summary.json`, além de dump/catálogo/keyring.
+Orquestradores locais temporários: `frente-d-rehearsal.py`,
+`frente-d-final-check.py` e adaptador `pg_restore` no diretório temporário OpenCode.
+
+**Tentativa preliminar segura:** bundle privado
+`checkpoint-20261116T175518Z-rh4unl`, 17:55:16–17:55:29 UTC. Restore passou e
+contagens coincidiram, mas a primeira comparação serializou timestamps com
+timezones diferentes na origem e no clone. A comparação bloqueou o cleanup;
+container `checkpoint-restore-frente-d-f815c5a8adfb` removido. Bundle mantido como
+evidência preliminar, **não usar como backup verificado**. A segunda execução
+acima normalizou UTC e passou integralmente, com backup novo.
+
+**Gate restante:** nenhuma autorização de exclusão PRD foi dada. Este backup
+prova restaurabilidade neste snapshot; futuras escritas exigem reavaliar janela,
+diagnóstico e backup antes de eventual limpeza autorizada. Sem commit nesta etapa.
+
+## Registro histórico anterior (não representa o resultado acima)
+
 ## Execução e proveniência
 
 - Snapshot: **2026-11-16 13:46:59.745808-03** (16:46:59 UTC).

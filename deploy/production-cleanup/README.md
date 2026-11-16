@@ -1,9 +1,47 @@
 # Frente D — preparação de limpeza de produção
 
-**BLOQUEADO: HLG ainda em publicação. Backup e limpeza NÃO executados.**
+**Backup PRD verificado e cleanup ensaiado somente no clone PG16 em 2026-11-16.
+Cleanup em PRD permanece BLOQUEADO: falta nova confirmação explícita do usuário.**
 Pacote persistido em `deploy/production-cleanup`, a partir de `ccxp-cleanup`
 temporário. Apenas scripts e documentação públicos; nenhum dump, credencial,
 chave SSH, `.env` ou key ring pertence ao repositório.
+
+## Resultado atual — backup e restore comprovados
+
+HLG validada em navegador conforme informado pelo usuário nesta execução.
+Backup/ensaio autorizados e concluídos **17:55:49–17:56:04 UTC**; evidências
+detalhadas e limites em `AUDIT.md`. Documentos de validação HLG não foram editados.
+
+Bundle privado verificado:
+
+`/Users/atilaalcantara/Documents/pixelArtCCXP26/checkpointCCXP26/backups-private/checkpoint-20261116T175551Z-bcKa1C`
+
+- Fora de Git; diretórios `700`, arquivos `600`; parent verificado com `ls`.
+- `checkpoint.dump` completo do schema, com fotos bytea e autenticação privada;
+  catálogo PG16 e checksums dos 11 artefatos passaram.
+- `keyring-prd.tar` adicional do volume Data Protection, somente leitura;
+  estrutura/XMLs válidos e conteúdo idêntico em segunda leitura, sem expor chaves.
+- Restore PG16.14 sem erro; todas as 14 tabelas com contagens e conteúdo iguais
+  à origem, incluindo fotos e roles/credenciais de admins. Comparação canônica
+  UTC/ISO/hex/C; hashes internos não publicados, resultados apenas booleanos.
+- Docker host remoto, clone `checkpoint-restore-frente-d-8000cafc27eb`, DB
+  `personal_db` **somente nessa instância**: `--network none`, sem portas,
+  PGDATA/socket em tmpfs e sem volumes/binds. Instância já removida.
+- `cleanup.sql` original e `postcheck.sql` passaram somente no clone:
+  oito tabelas-alvo vazias, **XP 0 / revisão 21**, constraints passaram;
+  visitantes, admins/roles, passkeys/credenciais, status e migrações idênticos.
+- PRD igual antes/depois do backup e após ensaio; somente leituras em PRD.
+  `remote.sh cleanup` não chamado. Nenhum serviço PRD/HLG alterado.
+
+Dry-run atual (diagnóstico PRD **14:55:53-03**, read-only): 3 enquetes, 6 opções,
+27 atribuições, 15 votos, 4 fotos, 5 marcadores, 0 idempotências/snapshots,
+11 visitantes, 2 admins, 2 passkeys, 4 migrações; site `before`, **25 XP / revisão
+20**, XP residual zero. Fotos: 4.853.745 bytes originais + 49.651 thumbnails.
+
+O bundle preliminar `checkpoint-20261116T175518Z-rh4unl` foi retido privadamente:
+comparação inicial bloqueada por timezone de serialização; nenhum cleanup nessa
+tentativa. Usar como referência verificada apenas o bundle `175551Z-bcKa1C`.
+Nenhum backup/segredo foi versionado e nenhum commit foi feito.
 
 ## Snapshot e escopo
 
@@ -25,9 +63,9 @@ explicam 10 XP; junto dos 15 votos explicam os 25 XP.
 - `remote.sh`: diagnóstico padrão, dry-run, postcheck e modo cleanup protegido.
 - `cleanup.sql`: **destrutivo, com COMMIT real**; locks, reconciliação de XP,
   validação de FKs e comparação de todas as colunas preservadas antes do COMMIT.
-- `backup.sh`: futuro dump custom privado, checksum e inspeção do catálogo.
+- `backup.sh`: dump custom privado, checksum e inspeção do catálogo; executado.
 - `postcheck.sql`: assertions read-only do estado após uma eventual limpeza.
-- `AUDIT.md`: evidências da auditoria original e limites.
+- `AUDIT.md`: evidências atuais de backup/ensaio e registro histórico.
 
 Executar scripts com `bash`. `remote.sh` resolve os arquivos SQL por caminho
 local absoluto relativo ao próprio script. Não é necessário copiar o pacote ao
@@ -51,7 +89,7 @@ Alternativa local: `psql -X -v ON_ERROR_STOP=1 -f dry-run.sql` com conexão
 explicitamente selecionada. Nenhum modo read-only executa `cleanup.sql`, nem
 mesmo com rollback. Não chamar `postcheck` antes da limpeza esperando sucesso.
 
-## Sequência futura obrigatória — não executar durante a publicação de HLG
+## Procedimento e gates — backup/ensaio executados; exclusão PRD ainda bloqueada
 
 1. **Concluir e validar HLG primeiro**, registrando resultado e versão validada.
    Só depois, mediante solicitação do usuário, criar o backup de PRD. As flags
@@ -94,7 +132,8 @@ ou logs. O dump não cobre roles globais, grants originais, extensões fora do s
 outros schemas, ambiente/API, chave privada SSH ou **key ring Data Protection**.
 Não remover/recriar o volume `checkpoint-data-protection` montado na API em
 `/var/lib/checkpoint-data-protection`; sua cópia privada requer procedimento
-separado autorizado. O dump isoladamente não recupera cookies/configuração.
+   separado autorizado. Nesta execução, `keyring-prd.tar` foi autorizado e validado
+   privadamente. O dump isoladamente não recupera cookies/configuração.
 
 ### Verificação obrigatória em sandbox PostgreSQL 16
 
@@ -136,7 +175,8 @@ separado autorizado. O dump isoladamente não recupera cookies/configuração.
    Essa etapa é destrutiva no clone e não faz parte do dry-run read-only.
 8. **Pedir nova confirmação explícita do usuário antes de qualquer exclusão
    em PRD**, apresentando evidência HLG, backup/restauração e impacto atualizado.
-   A solicitação de preparar este pacote NÃO autoriza backup nem exclusão.
+   Nesta execução, backup e ensaio foram explicitamente autorizados; a exclusão
+   PRD NÃO foi autorizada. Não inferir essa autorização da validação HLG/restore.
    Só então, em janela ainda válida, o comando futuro seria:
 
    ```bash
@@ -164,7 +204,11 @@ posteriores. Não executar `pg_restore --clean` em PRD, nem restaurar admins,
 passkeys/counters ou key ring automaticamente. Avançar revisão ao republicar o
 estado recuperado. Exclusão SQL não apaga WAL, backups ou páginas mortas.
 
-## Verificações desta persistência
+## Verificações e evidências
 
-Apenas revisão estática e `bash -n`; nenhum backup, restore, cleanup ou ensaio
-de escrita foi realizado nesta etapa. Snapshot acima veio da auditoria histórica.
+Backup, checksum, catálogo, restore e ensaio de cleanup somente no clone passaram;
+ver seção de resultado atual e `AUDIT.md`. Logs completos e resumo booleano em
+`verification-summary.json` estão no bundle privado, sem hashes de credenciais
+nos documentos. O histórico anterior continua identificado como histórico.
+Antes de eventual exclusão PRD, obter confirmação explícita e renovar diagnóstico/
+backup caso haja escritas posteriores. Restore não autoriza exclusão em PRD.

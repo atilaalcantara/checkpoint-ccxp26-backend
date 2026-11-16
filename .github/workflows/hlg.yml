@@ -31,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: bash -n deploy/hlg.sh
+      - name: Operations lock and deployment regression tests
+        run: python3 -B -m unittest discover -s deploy -p 'test_operations.py' -v
       - uses: docker/setup-buildx-action@v3
       - run: docker buildx build --platform linux/arm64 --load --target test -t checkpoint-hlg-test .
       - name: Tests with PostgreSQL
@@ -82,3 +84,9 @@ jobs:
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/hlg_known_hosts \
             -o ConnectTimeout=15 "$SSH_USER@oracle.atilaalcantara.com" \
             deploy-api "$IMAGE:hlg-$GITHUB_SHA"
+      - name: External HLG API health through active TLS proxy
+        run: >-
+          curl --fail --silent --show-error --output /dev/null
+          --retry 12 --retry-all-errors --retry-delay 5 --retry-max-time 180
+          --connect-timeout 10 --max-time 15
+          https://ccxp26-hlg.atilaalcantara.com/api/v1/site-status
