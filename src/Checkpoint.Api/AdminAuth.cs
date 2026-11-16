@@ -15,6 +15,7 @@ public static class AdminAuth
 {
     public static void MapAdminAuth(this WebApplication app)
     {
+        app.MapHomologationPasskeys();
         app.MapPost("/api/admin/auth/passkey/options", LoginOptions).RequireRateLimiting("admin-auth").RequireCors("admin");
         app.MapPost("/api/admin/auth/passkey/verify", LoginVerify).RequireRateLimiting("admin-auth").RequireCors("admin");
         app.MapGet("/api/admin/auth/me", (ClaimsPrincipal user) => user.Identity?.IsAuthenticated == true
@@ -52,13 +53,14 @@ public static class AdminAuth
     private static async Task<IResult> LoginVerify(HttpContext ctx, Store store, IDistributedCacheChallenge challenges, [FromServices] IFido2 fido, [FromBody] AuthenticatorAssertionRawResponse response, CancellationToken ct)
     {
         var state = await challenges.Take(ctx, ct);
-        if (state is null) return Results.BadRequest(new { error = "Challenge expirado. Solicite novamente." });
+        if (state is null || state.UserId != "") return Results.BadRequest(new { error = "Challenge expirado. Solicite novamente." });
         try
         {
             var options = JsonSerializer.Deserialize<AssertionOptions>(state.Options, WebJson.Options) ?? throw new InvalidOperationException();
             var id = response.RawId;
             await using var db = await store.Open(ct);
-            var credential = await db.QuerySingleOrDefaultAsync<CredentialRow>(new CommandDefinition("SELECT c.credential_id,c.public_key,c.sign_count,c.user_handle,u.id,u.name FROM checkpoint.admin_passkeys c JOIN checkpoint.admin_users u ON u.id=c.user_id WHERE c.credential_id=@id AND u.id='5f3f0000-0000-4000-8000-000000000001'", new { id }, cancellationToken: ct));
+            var hlg = HomologationPasskeys.Enabled(ctx.RequestServices.GetRequiredService<IHostEnvironment>(), ctx.RequestServices.GetRequiredService<IConfiguration>());
+            var credential = await db.QuerySingleOrDefaultAsync<CredentialRow>(new CommandDefinition("SELECT c.credential_id,c.public_key,c.sign_count,c.user_handle,u.id,u.name FROM checkpoint.admin_passkeys c JOIN checkpoint.admin_users u ON u.id=c.user_id WHERE c.credential_id=@id AND (@hlg OR u.id='5f3f0000-0000-4000-8000-000000000001')", new { id, hlg }, cancellationToken: ct));
             if (credential is null) return Results.Unauthorized();
             var result = await fido.MakeAssertionAsync(new MakeAssertionParams {
                 AssertionResponse = response, OriginalOptions = options, StoredPublicKey = credential.PublicKey,

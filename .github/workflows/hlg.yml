@@ -1,0 +1,84 @@
+name: HLG CI/CD
+
+on:
+  push:
+    branches: [homologacao]
+
+concurrency:
+  group: checkpoint-hlg-api
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/atilaalcantara/checkpoint-api
+  KNOWN_HOST: oracle.atilaalcantara.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOyLkQWog66Y5uXF5pBwM0Q5WsggzfB8P9KB/Rgx788e
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash -n deploy/hlg.sh
+      - uses: docker/setup-buildx-action@v3
+      - run: docker buildx build --platform linux/arm64 --load --target test -t checkpoint-hlg-test .
+      - name: Tests with PostgreSQL
+        run: >-
+          docker run --rm --network host
+          -e CHECKPOINT_TEST_ADMIN="Host=localhost;Username=postgres;Password=postgres;Database=postgres"
+          checkpoint-hlg-test
+
+  deploy:
+    needs: test
+    environment: homologation
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:hlg-${{ github.sha }}
+            ${{ env.IMAGE }}:hlg
+          cache-from: type=gha,scope=hlg-api
+          cache-to: type=gha,mode=max,scope=hlg-api
+      - name: Deploy HLG (pinned host key)
+        env:
+          SSH_KEY: ${{ secrets.HLG_DEPLOY_SSH_KEY }}
+          SSH_USER: ${{ vars.HLG_SSH_USER }}
+        run: |
+          set -euo pipefail
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          test -n "$SSH_KEY"
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/hlg_key' EXIT
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/hlg_key
+          printf '%s\n' "$KNOWN_HOST" > ~/.ssh/hlg_known_hosts
+          chmod 600 ~/.ssh/hlg_key ~/.ssh/hlg_known_hosts
+          ssh -i ~/.ssh/hlg_key -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/hlg_known_hosts \
+            -o ConnectTimeout=15 "$SSH_USER@oracle.atilaalcantara.com" \
+            deploy-api "$IMAGE:hlg-$GITHUB_SHA"
